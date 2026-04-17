@@ -1,0 +1,93 @@
+# =============================================================================
+# Tenant "globex" - runs a DIFFERENT service than tenant acme.
+#
+# acme  -> agent-echo         (general-purpose LLM echo / chat endpoint)
+# globex -> intent-classifier (utterance -> intent label)
+#
+# Same chart, same Argo CD project, same cluster, same CI pipeline shape.
+# DIFFERENT image, different code, different endpoint contract, different
+# env-var prefix (INTENT_CLASSIFIER_ vs AGENT_ECHO_).
+#
+# This is the realistic FDE pattern: one engineer owns the acme integration,
+# another owns the globex integration, both are built on the same platform
+# primitives, neither is blocked by the other.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tenant-globex
+  namespace: argocd
+  labels:
+    devops.platform/tenant: globex
+    # Tracks which service image this tenant currently runs. Handy for
+    # dashboards ("which tenants are on intent-classifier?") and for
+    # policy ("only allow tenants on approved service=... labels to
+    # deploy"). Bumped by a platformctl command, not by a human.
+    devops.platform/service: intent-classifier
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: tenants
+  source:
+    repoURL: https://github.com/YOUR-USER/devops-platform.git
+    targetRevision: main
+    path: charts/agent-integration
+    helm:
+      releaseName: globex
+      values: |
+        tenant: globex
+        environment: dev
+
+        # --- Image ----------------------------------------------------------
+        # The intent-classifier image, NOT agent-echo. CI for
+        # services/intent-classifier pushes here and bumps the tag below.
+        image:
+          repository: ghcr.io/YOUR-USER/intent-classifier
+          tag: "0.1.0"
+
+        replicaCount: 3
+
+        # --- HTTP surface ---------------------------------------------------
+        # The chart's Service exposes port 8000 regardless of service.
+        # Ingress host is per-tenant. We also override the probe paths
+        # because /v1/classify doesn't exist on agent-echo and vice versa;
+        # the /health and /ready probes happen to match by convention
+        # (every platform service exposes them), so the defaults are fine.
+        ingress:
+          enabled: true
+          className: nginx
+          host: globex.local.test
+
+        secret:
+          existingSecret: globex-intent-classifier-secrets
+
+        # --- Service-specific config ---------------------------------------
+        # These keys all begin with INTENT_CLASSIFIER_ because that's what
+        # services/intent-classifier/app/config.py expects. The chart does
+        # not know or care - it just renders a ConfigMap with whatever
+        # key/values you give it.
+        config:
+          INTENT_CLASSIFIER_OPENROUTER_MODEL: "anthropic/claude-3.5-haiku"
+          INTENT_CLASSIFIER_LOG_LEVEL: "INFO"
+          # Tenant-specific intent set. Globex's business is subscriptions,
+          # so they care about cancel/upgrade/billing signals.
+          INTENT_CLASSIFIER_INTENTS: "greeting,question,billing,cancel,upgrade,complaint,unknown"
+
+        resourceQuota:
+          enabled: true
+          hard:
+            requests.cpu: "4"
+            requests.memory: "4Gi"
+            limits.cpu: "8"
+            limits.memory: "8Gi"
+            pods: "40"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tenant-globex
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,3 @@
+gitops_repo_url      = "https://github.com/YOUR-USER/devops-platform.git"
+gitops_repo_revision = "main"
+cluster_name         = "devops-platform"

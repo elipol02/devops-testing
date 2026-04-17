@@ -1,0 +1,55 @@
+{{/*
+=============================================================================
+ServiceMonitor: a Prometheus-Operator CRD that says "please scrape these
+pods for metrics."
+
+Why a CRD and not a plain Prometheus config file: lets app teams ship their
+scrape config next to their Deployment, in Helm, without touching the
+central Prometheus configuration. This is the "self-service observability"
+pattern.
+
+Flow:
+  - kube-prometheus-stack runs the Prometheus Operator in `monitoring` ns.
+  - Operator watches for ServiceMonitor objects matching its configured
+    selector (labels.release == "kube-prometheus-stack" is the default).
+  - On match, it regenerates Prometheus's scrape config and HUPs Prometheus.
+
+If you deploy a ServiceMonitor without the expected label, Prometheus will
+silently ignore it. `kubectl -n monitoring get prometheuses -o yaml | grep
+-A5 serviceMonitorSelector` shows what the operator is matching on.
+=============================================================================
+*/}}
+{{- if .Values.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "agent-integration.fullname" . }}
+  labels:
+    {{- include "agent-integration.labels" . | nindent 4 }}
+    {{- /* The `release: kube-prometheus-stack` label added here is what the
+           operator matches on. Tenants can add more labels via values. */}}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  # Which Service to scrape. Matches by the same selector labels as the
+  # Deployment so we always target "our" pods.
+  selector:
+    matchLabels:
+      {{- include "agent-integration.selectorLabels" . | nindent 6 }}
+
+  # Scrape pods only in this namespace. Without this, the operator would
+  # search all namespaces and might collide with other tenants' Services
+  # that happen to share labels.
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+
+  # Which port on the Service to scrape. `port: http` matches the named
+  # port in service.yaml. path = where metrics live on that port.
+  endpoints:
+    - port: http
+      path: {{ .Values.serviceMonitor.path }}
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+{{- end }}

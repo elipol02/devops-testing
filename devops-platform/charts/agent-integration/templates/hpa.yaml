@@ -1,0 +1,52 @@
+{{/*
+=============================================================================
+HorizontalPodAutoscaler: adds/removes pods based on observed metrics.
+
+The control loop:
+  every 15s, HPA controller:
+    1. reads current CPU usage from metrics-server (or Prometheus adapter)
+    2. computes desired = ceil(currentReplicas * currentUtil / targetUtil)
+    3. clamps to [minReplicas, maxReplicas]
+    4. patches Deployment.spec.replicas
+
+"Horizontal" = more pods. "Vertical" (VPA) = bigger pods. HPA is the
+standard answer for stateless HTTP services; VPA fits batch jobs.
+
+autoscaling/v2 is the current stable API (v1 only supports CPU; v2 supports
+memory, custom metrics, and External/Object metrics).
+
+Why we REMOVED Deployment.spec.replicas when HPA is on: same reason you
+don't set your thermostat AND open a window - two controllers fighting for
+the same knob oscillate forever.
+=============================================================================
+*/}}
+{{- if .Values.autoscaling.enabled -}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "agent-integration.fullname" . }}
+  labels:
+    {{- include "agent-integration.labels" . | nindent 4 }}
+spec:
+  # Which workload to scale. HPA supports any "scale" subresource - so
+  # Deployment, StatefulSet, ReplicaSet, or custom resources with /scale.
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "agent-integration.fullname" . }}
+
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+
+  # Scale on CPU utilization as a percentage of resources.requests.cpu.
+  # Example: requests.cpu=50m, target=70% -> HPA scales up at 35m used/pod.
+  # For latency-sensitive services, scale on a custom metric (e.g. p95
+  # latency via Prometheus adapter) instead.
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

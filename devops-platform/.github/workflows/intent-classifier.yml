@@ -1,0 +1,36 @@
+name: intent-classifier
+# =============================================================================
+# Caller workflow for the intent-classifier service.
+#
+# Identical structure to agent-echo.yml - that's the point. Adding a new
+# service is ~15 lines of YAML. The reusable pipeline does all the real
+# work (tests, build, scan, push, GitOps bump). Every improvement to the
+# reusable workflow immediately benefits every service.
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/intent-classifier/**"
+      - ".github/workflows/intent-classifier.yml"
+      - ".github/workflows/reusable-service.yml"
+  pull_request:
+    paths:
+      - "services/intent-classifier/**"
+      - ".github/workflows/intent-classifier.yml"
+      - ".github/workflows/reusable-service.yml"
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-service.yml
+    with:
+      service_name: intent-classifier
+      service_path: services/intent-classifier
+      image_name: ghcr.io/${{ github.repository_owner }}/intent-classifier
+      bump_on_push: true
+      # Only tenants that run intent-classifier. acme runs agent-echo so
+      # is intentionally absent here.
+      gitops_values_paths: |
+        gitops/argocd/tenants/globex.yaml
+    secrets: inherit

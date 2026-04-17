@@ -1,0 +1,109 @@
+{{/*
+=============================================================================
+NetworkPolicy: a firewall rule at the pod level.
+
+CRITICAL: NetworkPolicies are only enforced if the cluster's CNI (Container
+Network Interface) supports them.
+  - kind default (kindnet)          : does NOT enforce NP
+  - kind with Calico/Cilium          : enforces
+  - AKS with azure-npm or Calico     : enforces (we enable "azure" policy
+                                                 in the AKS module)
+  - GKE with Network Policy enabled  : enforces
+On a cluster that doesn't enforce, these objects are silently advisory.
+
+Default posture in Kubernetes: ALL-OPEN. Any pod can reach any other pod in
+any namespace by default. This is the opposite of how cloud VPC security
+groups work, and surprises everyone.
+
+Strategy we use here:
+  1) A DEFAULT-DENY policy that selects every pod in this namespace and
+     allows nothing.
+  2) An ALLOW policy that opens narrow holes (ingress from ingress-nginx and
+     monitoring; egress to DNS and external HTTPS).
+Multiple NetworkPolicies are ADDITIVE - any pod matched by at least one
+policy that permits the traffic can send/receive it.
+=============================================================================
+*/}}
+{{- if .Values.networkPolicy.enabled -}}
+# ---- 1. Default-deny baseline ----
+# `podSelector: {}` matches EVERY pod in the namespace. policyTypes
+# Ingress+Egress without any `ingress`/`egress` rules = deny all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agent-integration.fullname" . }}-default-deny
+  labels:
+    {{- include "agent-integration.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# ---- 2. Allow list for our pods only ----
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agent-integration.fullname" . }}-allow
+  labels:
+    {{- include "agent-integration.labels" . | nindent 4 }}
+spec:
+  # Apply these allows ONLY to our pods (not other pods that may sit in the
+  # tenant namespace, e.g. a sidecar injected by another operator).
+  podSelector:
+    matchLabels:
+      {{- include "agent-integration.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # --- Ingress: who can talk TO us ---
+  ingress:
+    - from:
+        # Match namespaces by the auto-injected `kubernetes.io/metadata.name`
+        # label that k8s 1.22+ sets on every namespace. This is more reliable
+        # than matching custom namespace labels.
+        {{- range .Values.networkPolicy.allowIngressFromNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.targetPort }}
+
+  # --- Egress: where WE can reach out ---
+  egress:
+    # DNS is always required. Without this, the pod can't resolve hostnames,
+    # so every outbound call (including health checks to sibling Services!)
+    # fails in confusing ways. CoreDNS runs in kube-system with the
+    # k8s-app=kube-dns label.
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    {{- if .Values.networkPolicy.allowExternalEgress }}
+    # External HTTPS to the internet (OpenRouter, OTel exporters). We carve
+    # OUT the RFC1918 private ranges and link-local so a compromised pod
+    # can't pivot to cluster-internal or cloud-metadata endpoints (the
+    # classic SSRF -> IMDS attack on AWS/Azure).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8         # RFC1918
+              - 172.16.0.0/12      # RFC1918
+              - 192.168.0.0/16     # RFC1918
+              - 169.254.0.0/16     # link-local incl. cloud metadata (169.254.169.254)
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+{{- end }}

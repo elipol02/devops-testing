@@ -1,0 +1,6 @@
+gitops_repo_url      = "https://github.com/YOUR-USER/devops-platform.git"
+gitops_repo_revision = "main"
+prefix               = "devopsplat"
+location             = "westeurope"
+node_count           = 2
+node_vm_size         = "Standard_B2s"

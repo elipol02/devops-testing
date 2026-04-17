@@ -1,0 +1,61 @@
+# =============================================================================
+# AppProject: a BLAST RADIUS BOUNDARY inside Argo CD.
+#
+# By default, any Argo CD Application can deploy ANYTHING, ANYWHERE in the
+# cluster. That's dangerous on a shared platform. AppProject lets you
+# constrain which:
+#   - Git repos Applications can pull from (sourceRepos)
+#   - clusters/namespaces they can deploy to (destinations)
+#   - kinds of cluster-scoped objects they can create (clusterResourceWhitelist)
+#   - kinds of namespaced objects they can create (namespaceResourceWhitelist)
+#
+# We define ONE project per TRUST TIER. "tenants" is the relaxed tier for
+# per-customer integration services. A stricter "platform" project would own
+# things like ingress-nginx config, with tighter whitelists.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tenants
+  # AppProjects always live in the argocd namespace (that's where Argo CD
+  # is installed; the controller only watches its own namespace).
+  namespace: argocd
+  # When this AppProject is deleted, also delete Applications that belong
+  # to it. Prevents orphaned Applications accumulating.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: "Per-customer integration services deployed by the FDE platform."
+  # "*" = any Git repo. In prod, pin to the exact HTTPS URL of the platform
+  # monorepo so a compromised Application can't redirect to a malicious fork.
+  sourceRepos:
+    - "*"
+  # WHERE tenant Applications are allowed to deploy.
+  # - namespace: "tenant-*" -> glob; matches tenant-acme, tenant-globex, etc.
+  # - server: in-cluster only. Add more entries for multi-cluster.
+  destinations:
+    - namespace: "tenant-*"
+      server: https://kubernetes.default.svc
+
+  # CLUSTER-SCOPED resources tenants are allowed to create. Deliberately
+  # tiny: only Namespaces (so Argo can auto-create tenant-acme etc.).
+  # Without this, a tenant Application with a ClusterRole in it could grant
+  # itself admin rights. Platform-level projects would also whitelist
+  # ClusterRole, IngressClass, etc.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  # NAMESPACED resources allowed. "*" = everything; tenants inside their
+  # own namespace are free to create Deployments, Services, HPAs, etc.
+  # We rely on ResourceQuota + NetworkPolicy from the chart to keep them
+  # in their lane, rather than blocking specific kinds here.
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+
+  # If Argo sees resources in the namespace that AREN'T managed by any
+  # Application in this project, emit a WARNING (not an error) in the UI.
+  # Prune=true on the Application will remove them on next sync.
+  orphanedResources:
+    warn: true

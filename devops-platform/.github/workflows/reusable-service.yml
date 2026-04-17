@@ -1,0 +1,262 @@
+name: reusable-service
+# =============================================================================
+# Reusable CI pipeline for any FastAPI-style integration service in this repo.
+#
+# The pattern:
+#   1) `lint and test`  - fast checks on every push/PR
+#   2) `build and scan` - builds the image, Trivy-scans it, pushes to GHCR
+#                         (PRs scan only; pushes also push)
+#   3) `update-gitops`  - opens a PR bumping the image tag in the tenant
+#                         Application YAMLs so Argo CD deploys the new build
+#
+# This separation matters for two reasons:
+#   (a) fail fast: a `ruff` error shouldn't wait for a Trivy scan.
+#   (b) CI -> CD gap: CI produces an IMMUTABLE artifact (image digest);
+#       a separate step proposes a CD rollout via Git. You can merge or not.
+#
+# "Reusable" = called with `uses: ./.github/workflows/reusable-service.yml`
+# from a caller workflow. See agent-echo.yml for an example.
+# =============================================================================
+
+# workflow_call = declare this workflow can be invoked from other workflows
+# in this repo. Inputs are typed (string/boolean/...) and validated at call
+# time. Much cleaner than duplicating a 200-line pipeline per service.
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: "Short name used for the image and chart release."
+        required: true
+        type: string
+      service_path:
+        description: "Path to the service directory (contains Dockerfile, pyproject)."
+        required: true
+        type: string
+      image_name:
+        description: "Full image name (without tag), e.g. ghcr.io/owner/agent-echo."
+        required: true
+        type: string
+      python_version:
+        required: false
+        type: string
+        default: "3.12"
+      gitops_values_paths:
+        description: "Newline-separated list of tenant Application YAML files whose image.tag to bump."
+        required: false
+        type: string
+        default: ""
+      bump_on_push:
+        description: "Whether to bump the GitOps values on push to main."
+        required: false
+        type: boolean
+        default: true
+
+# Concurrency: cancel any in-flight run for the SAME service on the SAME ref
+# if a new commit arrives. Prevents stacking 5 builds when someone pushes
+# fast. The group key includes service_name so agent-echo and platformctl
+# don't cancel each other's runs.
+concurrency:
+  group: reusable-service-${{ inputs.service_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Permissions granted to GITHUB_TOKEN for this workflow.
+# Principle of least privilege: give only what's needed.
+#   contents: write      -> create PR branches
+#   packages: write      -> push images to GHCR
+#   id-token: write      -> OIDC token (for keyless image signing if added later)
+#   pull-requests: write -> open/update the GitOps bump PR
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  pull-requests: write
+
+jobs:
+  test:
+    name: lint and test
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout@v4 - the canonical "git clone the repo" action. v4
+      # uses Node 20. Always pin to a MAJOR tag (not @main) so upstream
+      # changes don't surprise you.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+          # cache: pip -> reuse ~/.cache/pip across runs via actions cache.
+          # Cuts pip install time from ~40s to ~5s on cache hit.
+          cache: pip
+
+      - name: install
+        working-directory: ${{ inputs.service_path }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # Ruff: fast Python linter + formatter. Replaces flake8/isort/black
+      # with a single tool written in Rust.
+      - name: ruff
+        working-directory: ${{ inputs.service_path }}
+        run: ruff check .
+
+      - name: pytest
+        working-directory: ${{ inputs.service_path }}
+        run: pytest -q
+
+  build:
+    name: build and scan
+    needs: test  # wait for tests before spending build minutes
+    runs-on: ubuntu-latest
+    # Surface outputs so the downstream `update-gitops` job can read the tag.
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+      image_digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Tagging strategy ---
+      # PRs:       pr-<num>-<sha>   (never overwrites main; easy to identify)
+      # Tags:      <tag name>       (git tag v0.1.0 -> image tag v0.1.0)
+      # Push main: main-<sha>       (always monotonic, retraceable)
+      # We never use `latest` as the PINNED tag; Argo CD bumps by digest/tag.
+      - name: compute tag
+        id: meta
+        shell: bash
+        run: |
+          short_sha="$(git rev-parse --short=12 HEAD)"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            version="pr-${{ github.event.pull_request.number }}-${short_sha}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            version="${{ github.ref_name }}"
+          else
+            version="main-${short_sha}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # buildx = the Docker build frontend with advanced caching/multiarch.
+      # Required by docker/build-push-action for cache-from/to=type=gha.
+      - uses: docker/setup-buildx-action@v3
+
+      # Log in to GHCR using the workflow's auto-provisioned GITHUB_TOKEN.
+      # Scoped to this repo only; expires at workflow end. No secret to rotate.
+      - name: log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # We build twice on purpose (but buildx cache makes the second "build"
+      # a near-instant layer reuse):
+      #   1) `load: true` -> pulls the image into the LOCAL docker daemon
+      #      so Trivy can scan it without pushing a bad image to GHCR first.
+      #   2) `push: true` AFTER Trivy passes.
+      - name: build (load locally for scan)
+        id: localbuild
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.service_path }}
+          file: ${{ inputs.service_path }}/Dockerfile
+          load: true
+          tags: local/${{ inputs.service_name }}:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Trivy scans the image for known CVEs (OS packages + language deps).
+      # exit-code: 1 means CI FAILS on HIGH/CRITICAL. This is the policy gate;
+      # stricter teams add MEDIUM. `ignore-unfixed: true` skips CVEs with no
+      # patch available (can't action them anyway).
+      - name: trivy scan (fail on HIGH,CRITICAL)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: local/${{ inputs.service_name }}:scan
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+
+      # Actually push - only on non-PR events, so external contributors can't
+      # trigger a push of their fork's code to our registry.
+      - name: push
+        id: push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.service_path }}
+          file: ${{ inputs.service_path }}/Dockerfile
+          push: true
+          # Two tags: the immutable sha-derived one (used in GitOps), plus
+          # :latest as a convenience for dev-only pulls.
+          tags: |
+            ${{ inputs.image_name }}:${{ steps.meta.outputs.version }}
+            ${{ inputs.image_name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # --- CD handoff: bump tenant values so Argo CD deploys the new image ---
+  # Only runs on pushes to main (not PRs, not tags). Opens a PR - never
+  # commits directly to main - so reviewers can hold/veto a bad rollout.
+  update-gitops:
+    name: bump gitops image tag
+    needs: build
+    if: ${{ inputs.bump_on_push && inputs.gitops_values_paths != '' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so peter-evans can diff correctly
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # yq (mikefarah, not the python yq) = jq for YAML. Pinned version so
+      # behavior doesn't shift under us mid-workflow.
+      - name: install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: bump image tag in tenant values
+        env:
+          # strenv() in yq reads process env vars safely (no shell injection).
+          NEW_TAG: ${{ needs.build.outputs.image_tag }}
+          IMAGE_NAME: ${{ inputs.image_name }}
+          PATHS: ${{ inputs.gitops_values_paths }}
+        run: |
+          set -euo pipefail
+          # Argo CD tenant Applications embed chart values as a MULTILINE
+          # STRING SCALAR at .spec.source.helm.values (so Helm sees one
+          # values file). yq can't edit inside that string directly, so:
+          #   1) extract the string to a temp file
+          #   2) edit the temp file with regular yq
+          #   3) put the result back using load_str() to keep it a scalar
+          #   4) force style=literal so YAML stays | not |-
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            echo "Updating $file"
+            yq -r '.spec.source.helm.values' "$file" > /tmp/values.yaml
+            NEW_TAG="$NEW_TAG" yq -i '.image.tag = strenv(NEW_TAG)' /tmp/values.yaml
+            IMAGE_NAME="$IMAGE_NAME" yq -i '.image.repository = strenv(IMAGE_NAME)' /tmp/values.yaml
+            yq -i '.spec.source.helm.values = load_str("/tmp/values.yaml")' "$file"
+            yq -i '.spec.source.helm.values style="literal"' "$file"
+          done <<< "$PATHS"
+
+      # peter-evans/create-pull-request: creates a branch, commits the diff,
+      # opens/updates a PR. Idempotent on the branch name, so re-running the
+      # workflow updates the SAME PR instead of spamming new ones.
+      - name: commit and open PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ci/${{ inputs.service_name }}-${{ needs.build.outputs.image_tag }}
+          title: "ci(${{ inputs.service_name }}): bump image to ${{ needs.build.outputs.image_tag }}"
+          commit-message: "ci(${{ inputs.service_name }}): bump image to ${{ needs.build.outputs.image_tag }}"
+          body: |
+            Automated bump from CI.
+
+            - Service: `${{ inputs.service_name }}`
+            - Image: `${{ inputs.image_name }}:${{ needs.build.outputs.image_tag }}`
+            - Digest: `${{ needs.build.outputs.image_digest }}`
+
+            Merging will trigger Argo CD to roll the tenant Deployments.
+          labels: automated,gitops

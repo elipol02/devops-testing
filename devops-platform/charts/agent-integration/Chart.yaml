@@ -1,0 +1,26 @@
+apiVersion: v2
+name: agent-integration
+description: |
+  A SHAPE for per-tenant custom integration services, not a product.
+
+  Renders the operational surface every platform service needs: Deployment,
+  Service, Ingress, optional HPA, ConfigMap / Secret, NetworkPolicy (default
+  deny + explicit allow), ResourceQuota, and a Prometheus ServiceMonitor.
+
+  Tenants bring their OWN image and OWN config keys. Example services that
+  conform to this shape live in services/agent-echo and
+  services/intent-classifier. Adding a new service is "write code, push
+  image, point a tenant Application at it" - no chart changes required.
+
+  One release per tenant. Every release lives in its own namespace with
+  NetworkPolicy + ResourceQuota for blast-radius containment.
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+keywords:
+  - devops
+  - integrations
+  - platform-shape
+  - fastapi
+maintainers:
+  - name: devops-platform

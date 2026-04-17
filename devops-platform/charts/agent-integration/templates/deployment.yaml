@@ -1,0 +1,146 @@
+{{/*
+=============================================================================
+Deployment: the "keep N identical pods running" resource.
+
+Why Deployment and not StatefulSet: this service is stateless (each replica
+is interchangeable, state lives upstream in OpenRouter + any DB we add
+later). StatefulSet is for things that need stable identity + persistent
+storage per replica (databases, message brokers).
+
+Why not a raw Pod: Pods don't auto-restart on node failure or image update.
+Deployment + ReplicaSet does both.
+=============================================================================
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agent-integration.fullname" . }}
+  labels:
+    {{- include "agent-integration.labels" . | nindent 4 }}
+spec:
+  # When HPA is enabled, it OWNS the replica count. Setting spec.replicas here
+  # would fight the HPA (each would overwrite the other's value on reconcile).
+  # Standard pattern: omit the field entirely when HPA is on.
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+
+  # Rolling update = bring up new pods, drain old ones, zero downtime.
+  # maxUnavailable: 0 = never drop below the desired replica count.
+  # maxSurge: 25%   = allow 25% extra pods during the transition.
+  # Combined: during a bump we briefly run 1.25x pods, never below 1x.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+
+  # How this Deployment finds "its" pods. MUST match template.metadata.labels
+  # below AND must not change after first apply (it's an immutable field).
+  selector:
+    matchLabels:
+      {{- include "agent-integration.selectorLabels" . | nindent 6 }}
+
+  template:
+    metadata:
+      labels:
+        {{- include "agent-integration.labels" . | nindent 8 }}
+      annotations:
+        # Checksum trick: when the ConfigMap content changes, this annotation
+        # changes, which changes the pod spec, which triggers a rolling update.
+        # Without this, a ConfigMap edit alone wouldn't restart pods to pick
+        # up new env vars. Classic k8s gotcha.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      # Pod-level security (non-root UID, seccomp). Applied to every container
+      # in the pod. See values.yaml -> podSecurityContext for the rationale.
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          # `containerPort` is advisory. It documents which port the app
+          # listens on; the Service's `targetPort: http` refers to this name.
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+
+          # Direct env entries for tenant identity. Kept HERE (not in the
+          # ConfigMap) so they're visible at-a-glance in `kubectl describe`.
+          env:
+            - name: AGENT_ECHO_TENANT
+              value: {{ .Values.tenant | quote }}
+            - name: AGENT_ECHO_ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+
+          # envFrom injects every key in the ConfigMap (and Secret, if
+          # configured) as an env var. Cleaner than listing each one.
+          envFrom:
+            - configMapRef:
+                name: {{ include "agent-integration.fullname" . }}
+            {{- if or .Values.secret.existingSecret .Values.secret.createFromValues }}
+            - secretRef:
+                name: {{ include "agent-integration.secretName" . }}
+            {{- end }}
+
+          # Liveness: failure -> pod is RESTARTED. Keep it cheap and
+          # dependency-free. GET /health returns 200 as long as the process
+          # is alive, regardless of OpenRouter availability.
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+
+          # Readiness: failure -> pod is REMOVED from the Service endpoints.
+          # Safe to have dependency checks here. GET /ready returns 503 if
+          # OpenRouter API key is missing/invalid.
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+
+          # CPU/memory requests (guaranteed) and limits (hard cap).
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+          # Container-level hardening (read-only FS, drop caps).
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+
+          {{- with .Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+      {{- with .Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      # Scheduling hints. All optional. A real platform would also set
+      # topologySpreadConstraints so replicas spread across AZs.
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

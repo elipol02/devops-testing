@@ -1,0 +1,34 @@
+{{/*
+=============================================================================
+Service: a STABLE internal DNS name + virtual IP for a set of pods.
+
+Why we need one: pods come and go; their IPs change. A Service gives clients
+(the Ingress, Prometheus, sibling services) one address that automatically
+tracks whichever pods match the selector.
+
+Reachable inside the cluster at:
+   <name>.<namespace>.svc.cluster.local
+e.g. acme.tenant-acme.svc.cluster.local:80
+=============================================================================
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agent-integration.fullname" . }}
+  labels:
+    {{- include "agent-integration.labels" . | nindent 4 }}
+spec:
+  # ClusterIP = only reachable inside the cluster. The Ingress is what makes
+  # us reachable from outside. Keeps the cloud LB count low (one shared LB
+  # for all tenants via ingress-nginx, not one per tenant).
+  type: {{ .Values.service.type }}
+
+  ports:
+    - name: http           # port names let other resources reference by name
+      port: {{ .Values.service.port }}        # the Service's virtual port
+      targetPort: http     # matches containerPort name in Deployment
+      protocol: TCP
+
+  # Which pods belong to this Service. MUST match Deployment's template labels.
+  selector:
+    {{- include "agent-integration.selectorLabels" . | nindent 4 }}

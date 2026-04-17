@@ -1,0 +1,47 @@
+name: agent-echo
+# =============================================================================
+# Caller workflow for the agent-echo service.
+#
+# Does no work itself; delegates to the reusable CI pipeline. The pattern
+# means every new service is ~10 lines of YAML, and every pipeline change
+# benefits every service at once.
+# =============================================================================
+
+on:
+  # Path filters: only run CI when the service directory OR the workflow
+  # files themselves change. Skip CI on doc-only PRs - saves minutes and
+  # keeps branch protection from blocking unrelated merges.
+  push:
+    branches: [main]
+    paths:
+      - "services/agent-echo/**"
+      - ".github/workflows/agent-echo.yml"
+      - ".github/workflows/reusable-service.yml"
+  pull_request:
+    paths:
+      - "services/agent-echo/**"
+      - ".github/workflows/agent-echo.yml"
+      - ".github/workflows/reusable-service.yml"
+
+jobs:
+  build:
+    # Relative path (./...) = use the reusable workflow from THIS repo on
+    # the SAME ref. Use `org/repo/path@sha` to pull from a different repo.
+    uses: ./.github/workflows/reusable-service.yml
+    with:
+      service_name: agent-echo
+      service_path: services/agent-echo
+      # ${{ github.repository_owner }} resolves at runtime so the image name
+      # matches whoever owns the repo (works for forks).
+      image_name: ghcr.io/${{ github.repository_owner }}/agent-echo
+      bump_on_push: true
+      # ONLY tenants that run the agent-echo image. Each service owns its
+      # own list; globex runs intent-classifier, so it is NOT bumped here.
+      # This is a core property of the "many services, one platform"
+      # model: a push to services/agent-echo must never move an unrelated
+      # tenant's pinned image.
+      gitops_values_paths: |
+        gitops/argocd/tenants/acme.yaml
+    # secrets: inherit forwards caller's secrets (e.g. GITHUB_TOKEN) to the
+    # reusable workflow. Without it, `secrets.GITHUB_TOKEN` is undefined there.
+    secrets: inherit

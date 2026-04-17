@@ -1,0 +1,55 @@
+{{/*
+=============================================================================
+Ingress: routes external HTTP traffic into a Service based on hostname/path.
+
+Think "reverse proxy config, but declarative." An IngressClass (here: nginx)
+maps the Ingress resource to an actual controller pod (ingress-nginx) that
+does the routing.
+
+Flow:
+  internet -> LoadBalancer (cloud) or NodePort (kind) -> ingress-nginx Pod
+           -> matches rule by Host header -> forwards to our Service -> Pod
+
+We only render this if .Values.ingress.enabled (a tenant might want
+ClusterIP-only for internal-only services).
+=============================================================================
+*/}}
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "agent-integration.fullname" . }}
+  labels:
+    {{- include "agent-integration.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # Tells k8s which ingress controller picks this up. Must match the
+  # IngressClass installed in the cluster. We install `nginx` via Helm in
+  # platform-bootstrap.
+  ingressClassName: {{ .Values.ingress.className }}
+
+  rules:
+    - host: {{ include "agent-integration.ingressHost" . | quote }}
+      http:
+        paths:
+          - path: /
+            # Prefix = match everything under /. Use "Exact" for single URLs.
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "agent-integration.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+
+  # Optional TLS. In prod, cert-manager auto-provisions these Secrets via
+  # Let's Encrypt. Left as a flag here to keep the demo trivially simple.
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ include "agent-integration.ingressHost" . | quote }}
+      secretName: {{ .Values.ingress.tls.secretName | quote }}
+  {{- end }}
+{{- end }}

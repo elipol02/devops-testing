@@ -1,0 +1,105 @@
+# =============================================================================
+# Argo CD Application for tenant `acme`.
+#
+# This file IS the tenant's entire contract with the platform:
+#   - which chart to deploy  (source.path)
+#   - from which Git revision (source.targetRevision)
+#   - with which values     (source.helm.values)
+#   - into which namespace  (destination.namespace)
+#   - with what sync rules  (syncPolicy)
+#
+# To onboard a new tenant: copy this file, change the name + tenant slug +
+# host, merge the PR. Argo CD picks it up (because the root "app-of-apps"
+# recurses over gitops/argocd/) and deploys everything within ~30s.
+#
+# To offboard: delete this file and merge. The resources-finalizer +
+# syncPolicy.automated.prune remove the Deployment/Service/etc., and the
+# namespace goes away (platform code could add a separate GC step).
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  # Name pattern: "tenant-<slug>". Must be unique per-namespace (argocd).
+  name: tenant-acme
+  # Argo CD only watches Applications in its OWN namespace.
+  namespace: argocd
+  labels:
+    # Custom label used by Grafana dashboards and platformctl to filter.
+    devops.platform/tenant: acme
+    # Which service image this tenant currently runs. acme runs agent-echo;
+    # sibling tenant globex runs intent-classifier. Same chart, same
+    # cluster, different service.
+    devops.platform/service: agent-echo
+  # Without this finalizer, deleting the Application leaves the Deployment,
+  # Service, etc., behind. With it, Argo cascades deletion through children.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # Which AppProject this belongs to. "tenants" is the one in
+  # gitops/argocd/projects/tenants.yaml that constrains WHERE tenant apps
+  # can deploy (namespace glob "tenant-*").
+  project: tenants
+
+  source:
+    # IMPORTANT: point this at YOUR fork. The root app-of-apps also clones
+    # this repo, but each Application can point at a DIFFERENT repo/ref if
+    # needed (useful for per-tenant isolation in a real platform).
+    repoURL: https://github.com/YOUR-USER/devops-platform.git
+    targetRevision: main
+    # path within the repo. We reference the CHART DIRECTORY, not a
+    # pre-rendered manifest - Argo CD invokes helm template at sync time.
+    path: charts/agent-integration
+    helm:
+      # Helm release name = the identity the chart generates all object
+      # names from. We use the tenant slug directly so objects are
+      # `acme`, `acme-quota`, etc. (not `tenant-acme-...`).
+      releaseName: acme
+      # Inline values as a MULTILINE STRING. Argo CD feeds this to `helm
+      # template --values -`. Why not `valueFiles:` pointing at a file?
+      # Inline = one file per tenant, PR-reviewable in diffs. Also lets CI
+      # update the image.tag in this file directly (see reusable-service.yml).
+      values: |
+        tenant: acme
+        environment: dev
+        image:
+          repository: ghcr.io/YOUR-USER/agent-echo
+          tag: "0.1.0"
+        replicaCount: 2
+        ingress:
+          enabled: true
+          className: nginx
+          host: acme.local.test
+        secret:
+          # References a Secret that ALREADY EXISTS in the tenant namespace.
+          # Created in local demos by scripts/seed-openrouter-secret.sh,
+          # in prod by SealedSecrets/ExternalSecrets.
+          existingSecret: acme-agent-echo-secrets
+        config:
+          AGENT_ECHO_OPENROUTER_MODEL: "openrouter/auto"
+          AGENT_ECHO_LOG_LEVEL: "INFO"
+          AGENT_ECHO_SYSTEM_PROMPT: >-
+            You are an AI agent for Acme Corp. Keep answers short and specific.
+
+  destination:
+    server: https://kubernetes.default.svc
+    # Namespace matches the AppProject glob "tenant-*". CreateNamespace=true
+    # in syncOptions below lets Argo create it automatically.
+    namespace: tenant-acme
+
+  syncPolicy:
+    # automated.* turns this into "pull-based continuous deployment":
+    #   prune:    remove resources that were deleted from Git
+    #   selfHeal: revert manual kubectl edits to match Git
+    # Together = Git is the single source of truth.
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # Auto-create `tenant-acme` namespace if it doesn't exist. Otherwise
+      # the first sync fails with "namespace not found."
+      - CreateNamespace=true
+      # Server-side apply: k8s 1.22+ uses SSA under the hood and tracks
+      # field ownership. Avoids the "helm strategic merge drift" that
+      # client-side apply suffers from when multiple controllers touch
+      # the same object.
+      - ServerSideApply=true

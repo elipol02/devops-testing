@@ -1,0 +1,58 @@
+name: platformctl
+# =============================================================================
+# CI for the platformctl CLI (Python Typer).
+#
+# We keep it separate from reusable-service.yml because platformctl isn't
+# containerized: it's distributed as a Python package (pip install -e .).
+# Lightweight pipeline: lint + test + dogfood (run `platformctl lint` on
+# the tenant manifests in the repo).
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "platformctl/**"
+      - ".github/workflows/platformctl.yml"
+  pull_request:
+    paths:
+      - "platformctl/**"
+      - ".github/workflows/platformctl.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # pip install -e . = editable install. Useful in CI because the
+      # `platformctl` CLI entrypoint becomes available immediately without
+      # rebuilding a wheel.
+      - name: install
+        working-directory: platformctl
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: ruff
+        working-directory: platformctl
+        run: ruff check .
+      - name: pytest
+        working-directory: platformctl
+        run: pytest -q
+      # Dogfood: run the CLI's own lint subcommand against the tenant YAMLs.
+      # Proves the CLI works end-to-end and that no checked-in tenant
+      # manifest has drifted out of template-compliance.
+      - name: lint tenant manifests
+        run: |
+          cd platformctl
+          python -c "
+          import subprocess
+          r = subprocess.run(['platformctl', 'lint'], capture_output=True, text=True)
+          print(r.stdout); print(r.stderr); exit(r.returncode)
+          "

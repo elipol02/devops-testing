@@ -1,0 +1,68 @@
+name: chart-lint
+# =============================================================================
+# Chart CI: validate that the Helm chart templates to VALID Kubernetes
+# manifests before anyone merges.
+#
+# Two levels of checking:
+#   1) helm lint       - chart-level rules (Chart.yaml present, values
+#                        schema valid, no broken template references).
+#   2) kubeconform     - schema-checks the RENDERED manifests against the
+#                        Kubernetes API spec. Catches typos like
+#                        `spec.container` (missing `s`) that helm lint
+#                        wouldn't flag.
+#
+# CRD schemas (ServiceMonitor, Application, etc.) aren't in the core k8s
+# schema, so we point kubeconform at the datreeio CRDs catalog as a second
+# schema source. `-ignore-missing-schemas` so a new CRD doesn't fail CI.
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "charts/**"
+      - ".github/workflows/chart-lint.yml"
+  pull_request:
+    paths:
+      - "charts/**"
+      - ".github/workflows/chart-lint.yml"
+
+permissions:
+  contents: read  # read-only; we don't push anything here
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install helm
+        uses: azure/setup-helm@v4
+        with:
+          # Pin Helm version. Template output differs slightly between
+          # helm 3.14 and 3.16; keep CI deterministic.
+          version: v3.16.2
+
+      # kubeconform: faster/simpler than kubeval (its predecessor), schema-
+      # validates k8s YAML offline. Required because helm template won't
+      # catch e.g. wrong apiVersion for HPA.
+      - name: install kubeconform
+        run: |
+          curl -sSLo /tmp/kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp
+          sudo mv /tmp/kubeconform /usr/local/bin/
+
+      - name: helm lint
+        run: helm lint charts/agent-integration
+
+      # Render with minimum required values then pipe to kubeconform. The
+      # rendered YAML goes to stdout; kubeconform consumes it on stdin.
+      - name: helm template + kubeconform
+        run: |
+          helm template demo charts/agent-integration \
+            --set tenant=demo \
+            --set image.repository=ghcr.io/demo/agent-echo \
+            --set image.tag=0.1.0 \
+            | kubeconform -strict -ignore-missing-schemas \
+                -schema-location default \
+                -schema-location "https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"

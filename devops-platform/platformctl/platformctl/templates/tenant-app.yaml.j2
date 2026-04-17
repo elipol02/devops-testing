@@ -1,0 +1,59 @@
+{# =============================================================================
+   Jinja template rendered by `platformctl new-tenant`. Produces one Argo CD
+   Application per tenant, identical in SHAPE to the hand-edited examples in
+   gitops/argocd/tenants/.
+
+   The template is service-parameterized: the FDE picks which service image
+   this tenant should run (agent-echo, intent-classifier, or any future
+   service). Env var KEYS are derived from the service name so the ConfigMap
+   lines up with what services/<service>/app/config.py expects.
+
+   Keep the template INTENTIONALLY MINIMAL. If a tenant needs fancy overrides
+   (e.g. a bigger ResourceQuota, a custom system prompt), the FDE edits the
+   resulting YAML after platformctl writes it; we don't try to expose every
+   chart value as a CLI flag.
+============================================================================= #}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tenant-{{ tenant }}
+  namespace: argocd
+  labels:
+    devops.platform/tenant: {{ tenant }}
+    devops.platform/service: {{ service }}
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: tenants
+  source:
+    repoURL: {{ repo_url }}
+    targetRevision: {{ revision }}
+    path: charts/agent-integration
+    helm:
+      releaseName: {{ tenant }}
+      {# The `values: |` pipe makes what follows a LITERAL block scalar -
+         Helm sees it as one big values.yaml. CI's yq bump relies on this
+         structure (load_str / style=literal in reusable-service.yml). #}
+      values: |
+        tenant: {{ tenant }}
+        environment: {{ environment }}
+        image:
+          repository: {{ image_repository }}
+          tag: "{{ image_tag }}"
+        replicaCount: {{ replica_count }}
+        ingress:
+          enabled: true
+          className: nginx
+          host: {{ tenant }}.{{ ingress_domain }}
+        secret:
+          {# Name the Secret deterministically so the FDE knows exactly
+             what to seal/create. Includes the service name so a tenant
+             running two services at once wouldn't collide. #}
+          existingSecret: {{ tenant }}-{{ service }}-secrets
+        config:
+          {# env_prefix is derived from the service name (e.g.
+             intent-classifier -> INTENT_CLASSIFIER_). Every platform
+             service we ship uses this convention. If you build a service
+             with a different prefix, pass --env-prefix. #}
+          {{ env_prefix }}OPENROUTER_MODEL: "{{ model }}"
+          {{ env_prefix }}LOG_LEVEL: "INFO"

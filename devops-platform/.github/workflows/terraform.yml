@@ -1,0 +1,98 @@
+name: terraform
+# =============================================================================
+# Terraform CI: format, validate, and (on PR) plan.
+#
+# Two jobs:
+#   validate - fast, NO credentials; runs for every env in matrix.
+#   plan-azure - only on PRs; uses OIDC to assume an Azure role and run
+#                `terraform plan` so reviewers can see cloud diffs before merge.
+#
+# We deliberately DON'T apply from CI. Apply is a local action for this
+# project (bootstrap scripts). A prod workflow would split differently:
+# plan on PR, apply on merge to main via manual approval.
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform.yml"
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform.yml"
+
+# Minimal permissions. contents:read = clone the repo. pull-requests:write =
+# reserved for a future "post plan as PR comment" step.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    # Matrix: run the same job once per env. fail-fast:false means azure-dev
+    # failing doesn't abort local, so we see both sets of errors in one run.
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [local, azure-dev]
+    runs-on: ubuntu-latest
+    # defaults.run.working-directory saves repeating `cd ...` on every step.
+    defaults:
+      run:
+        working-directory: infra/terraform/envs/${{ matrix.env }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          # Pin to a specific Terraform version so formatting rules don't
+          # drift between local dev and CI.
+          terraform_version: 1.9.8
+
+      # terraform fmt -check: fail if any .tf file isn't canonically
+      # formatted. Runs recursively from the repo root so it also catches
+      # drift in modules, not just envs.
+      - name: fmt
+        run: terraform fmt -check -recursive ../../..
+
+      # -backend=false: don't try to init the remote state backend. We're
+      # only syntax-checking; backend config probably references secrets.
+      - name: init (backend=false)
+        run: terraform init -backend=false
+
+      # `validate` checks for type errors, missing vars, provider blocks, etc.
+      # It does NOT hit cloud APIs - safe to run without creds.
+      - name: validate
+        run: terraform validate
+
+  plan-azure:
+    if: github.event_name == 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    # `environment: azure-dev` gates this job on GitHub Environment rules
+    # (required reviewers, protection rules). Also scopes which secrets
+    # this job can see (env-level secrets only).
+    environment: azure-dev
+    defaults:
+      run:
+        working-directory: infra/terraform/envs/azure-dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      # azure/login with client-id + tenant-id + subscription-id (NO secret)
+      # = OIDC federation. GitHub issues a short-lived token, Azure verifies
+      # it against a federated credential on an AAD app. No long-lived
+      # secret stored in GitHub.
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - run: terraform init
+      # -no-color: cleaner logs.
+      # -input=false: never prompt (there's no interactive terminal here).
+      - run: terraform plan -no-color -input=false

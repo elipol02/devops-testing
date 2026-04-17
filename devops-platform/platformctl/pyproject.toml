@@ -1,0 +1,31 @@
+[project]
+name = "platformctl"
+version = "0.1.0"
+description = "Self-service CLI for the DevOps platform. Onboards, lists, and decommissions tenants."
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12.0",
+    "jinja2>=3.1.4",
+    "rich>=13.9.0",
+    "pyyaml>=6.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "ruff>=0.7.0",
+]
+
+[project.scripts]
+platformctl = "platformctl.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["platformctl*"]
+
+[tool.setuptools.package-data]
+platformctl = ["templates/*.j2"]

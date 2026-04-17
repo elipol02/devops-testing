@@ -1,0 +1,31 @@
+{{/*
+=============================================================================
+ResourceQuota: caps the TOTAL resource requests/limits/object count per
+namespace.
+
+Why: without one, any tenant could submit a Deployment with
+replicas=10000 and starve the cluster. With one, the API server rejects
+create/update requests that would exceed the quota.
+
+Interaction with HPA: if maxReplicas * per-pod-limits > quota, HPA is
+capped by the quota. Make sure the math works, or you'll see events like
+"exceeded quota" and pods stuck Pending.
+
+Common quota keys:
+  requests.cpu / requests.memory  -> sum of resources.requests across pods
+  limits.cpu / limits.memory      -> sum of resources.limits
+  pods                            -> pod count
+  services, persistentvolumeclaims, configmaps, secrets, ...
+=============================================================================
+*/}}
+{{- if .Values.resourceQuota.enabled -}}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "agent-integration.fullname" . }}-quota
+  labels:
+    {{- include "agent-integration.labels" . | nindent 4 }}
+spec:
+  hard:
+    {{- toYaml .Values.resourceQuota.hard | nindent 4 }}
+{{- end }}

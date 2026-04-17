@@ -1,0 +1,15 @@
+Tenant "{{ .Values.tenant }}" deployed in namespace "{{ .Release.Namespace }}".
+
+1. Check pods:
+   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+
+2. Port-forward for a quick smoke test:
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "agent-integration.fullname" . }} 8080:{{ .Values.service.port }}
+   curl http://localhost:8080/health
+
+{{- if .Values.ingress.enabled }}
+3. Through the ingress (add a hosts entry if you're on kind):
+   curl -H "Host: {{ include "agent-integration.ingressHost" . }}" http://localhost/health
+{{- end }}
+
+4. Prometheus should start scraping /metrics automatically via the ServiceMonitor.

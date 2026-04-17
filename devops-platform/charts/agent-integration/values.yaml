@@ -1,0 +1,256 @@
+# =============================================================================
+# Default values for the agent-integration chart.
+#
+# This chart is a SHAPE, not a product. It describes "an HTTP service that
+# exposes /metrics on :8000 and gets fronted by ingress-nginx", plus a
+# standard set of guardrails (NetworkPolicy, ResourceQuota, HPA,
+# ServiceMonitor). It does NOT assume any particular application code.
+#
+# The platform ships the chart; each FDE ships a DIFFERENT service that
+# conforms to the shape:
+#   tenant acme   -> image ghcr.io/<org>/agent-echo        (see services/agent-echo)
+#   tenant globex -> image ghcr.io/<org>/intent-classifier (see services/intent-classifier)
+#   tenant <new>  -> image ghcr.io/<org>/<whatever>        (new FDE, new service)
+#
+# Every tenant Application in gitops/argocd/tenants/*.yaml overrides a SUBSET
+# of these values. Anything not overridden uses the default here.
+#
+# Rule of thumb:
+#  - "safe, opinionated default that works for ANY service" -> set here.
+#  - "service-specific" (e.g. image repository, env vars) -> leave empty/demo
+#    value here, MUST be set per tenant.
+# =============================================================================
+
+# --- Identity ----------------------------------------------------------------
+
+# Short slug for the customer/tenant (e.g. "acme"). Used for:
+#   - the log context key `tenant=...`
+#   - the default ingress host `<tenant>.<domain>`
+#   - a Kubernetes label `devops.platform/tenant` on every object
+# MUST be DNS-1123 compliant (lowercase alphanumerics + hyphen).
+tenant: example
+
+# Which environment this release represents. Propagated as an env var so the
+# service can branch on it (e.g. verbose logs in dev, strict rate limits in prod).
+environment: dev  # dev | staging | prod
+
+# --- Container image ---------------------------------------------------------
+
+# MUST be overridden per tenant. The default below is a placeholder that
+# will not resolve. Each tenant Application picks a different image:
+#   acme   -> ghcr.io/<org>/agent-echo
+#   globex -> ghcr.io/<org>/intent-classifier
+# CI for EACH service only bumps the tag for the tenants that run THAT
+# service (see .github/workflows/<service>.yml -> gitops_values_paths).
+# Tenants on different services move independently - a new agent-echo
+# build never affects globex, and vice versa.
+image:
+  repository: ghcr.io/OWNER/REPLACE-ME
+  tag: "0.1.0"
+  # IfNotPresent = reuse image if already cached on the node. Saves bandwidth
+  # and makes pod restart faster. Change to Always only for `:latest` tags
+  # (which we forbid via policy-as-code; see docs/NEXT_STEPS.md).
+  pullPolicy: IfNotPresent
+
+# List of imagePullSecret references. Empty for public GHCR/ACR (we attach
+# ACR via kubelet identity in the AKS module - no per-pod secret needed).
+imagePullSecrets: []
+
+# --- Replication -------------------------------------------------------------
+
+# Baseline pod count when HPA is disabled. With HPA enabled, this is IGNORED
+# and `autoscaling.minReplicas` wins.
+replicaCount: 2
+
+# --- Service / Ingress -------------------------------------------------------
+
+service:
+  # ClusterIP means "only reachable from inside the cluster." The Ingress
+  # (below) is what exposes us externally. Don't change this to LoadBalancer
+  # per service - that would spin up one cloud LB per tenant (very expensive).
+  type: ClusterIP
+  # Port the Service listens on internally (what Ingress targets).
+  port: 80
+  # Port inside the Pod container. The FastAPI uvicorn process binds :8000.
+  targetPort: 8000
+
+ingress:
+  enabled: true
+  # nginx is the ingress-nginx controller we install in platform-bootstrap.
+  className: nginx
+  # If empty, we template the host as "<tenant>.<domain>". If set, this wins.
+  host: ""
+  # Wildcard domain for all tenants in this cluster. Point a wildcard DNS
+  # record or hosts file entry at the ingress LB/NodePort for real traffic.
+  domain: example.test
+  # Per-ingress-nginx knobs go here. SSL redirect off = handy for local demo.
+  # In prod, move TLS termination to ingress-nginx + cert-manager.
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+  tls:
+    enabled: false
+    secretName: ""
+
+# --- Resources ---------------------------------------------------------------
+
+# The Kubernetes scheduler ADMITS pods only if the node has at least `requests`
+# capacity free. `limits` is the HARD CAP - exceed CPU -> throttled, exceed
+# memory -> OOM-killed. Forgetting these is the #1 newbie bug.
+#
+# Guideline: set requests to the 50th percentile usage, limits to ~2x that.
+# HPA scales horizontally once you hit 70% of requests (see below).
+resources:
+  requests:
+    cpu: 50m        # 50m = 0.05 of a CPU core
+    memory: 128Mi   # 128 MiB
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# --- Horizontal Pod Autoscaler (HPA) -----------------------------------------
+
+# Adds/removes pod replicas based on CPU utilization vs resources.requests.cpu.
+# Example: requests.cpu=50m, target=70%, current CPU=40m -> HPA adds a replica.
+# `minReplicas >= 2` so we always have redundancy for a rolling update.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# --- Namespace-wide quota ----------------------------------------------------
+
+# ResourceQuota caps TOTAL requests/limits/pod count in the tenant's namespace.
+# Purpose: one misbehaving tenant can't eat the whole cluster's capacity.
+# Numbers should be >= (maxReplicas * per-pod-limits) or the HPA will get
+# stuck unable to scale up.
+resourceQuota:
+  enabled: true
+  hard:
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.cpu: "4"
+    limits.memory: 4Gi
+    pods: "20"
+
+# --- Network policy ---------------------------------------------------------
+
+# A default-deny NetworkPolicy is rendered alongside an allow-list (see
+# templates/networkpolicy.yaml). Without this, any pod in any namespace could
+# reach any other pod - k8s is permissive by default.
+#
+# "allowExternalEgress" lets the service reach OpenRouter. If you're in a
+# network-isolated cluster, set this false and use an egress proxy instead.
+networkPolicy:
+  enabled: true
+  # Which other namespaces are allowed to send traffic TO us. ingress-nginx
+  # needs to reach us to serve user requests; monitoring (Prometheus) needs
+  # to reach /metrics.
+  allowIngressFromNamespaces:
+    - ingress-nginx
+    - monitoring
+  allowExternalEgress: true
+
+# --- Prometheus scraping -----------------------------------------------------
+
+# A ServiceMonitor is a Prometheus-Operator CRD. Writing one means "please
+# scrape the pods behind this Service." kube-prometheus-stack runs the
+# operator.
+serviceMonitor:
+  enabled: true
+  interval: 30s        # how often to scrape
+  scrapeTimeout: 10s
+  path: /metrics
+  # kube-prometheus-stack only scrapes ServiceMonitors that have this label
+  # (its configured `serviceMonitorSelector`). Forgetting this label =
+  # silently no metrics.
+  labels:
+    release: kube-prometheus-stack
+
+# --- Security context --------------------------------------------------------
+
+# Pod-level defaults: run as a fixed non-root UID/GID. `fsGroup` means any
+# volume the pod mounts gets group-owned by 10001 so the app can write to it
+# even with readOnlyRootFilesystem below.
+# `seccompProfile: RuntimeDefault` enables the container runtime's default
+# syscall filter - cheap hardening, no app changes needed.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level hardening:
+#  - allowPrivilegeEscalation:false -> can't `sudo`/setuid inside the container
+#  - readOnlyRootFilesystem:true    -> the app can't write to / (forces devs to
+#                                       think about where state goes; we mount
+#                                       an emptyDir at /tmp below)
+#  - drop ALL capabilities          -> start from zero kernel privileges
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# --- Probes ------------------------------------------------------------------
+
+# Liveness:  "is the process alive?"  -> failure: k8s kills + restarts the pod.
+# Readiness: "ready to serve traffic?" -> failure: k8s keeps the pod but stops
+#                                          routing to it.
+# We split them so a transient dependency outage (OpenRouter down) yanks
+# traffic WITHOUT restarting and reshuffling pods.
+probes:
+  liveness:
+    path: /health
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  readiness:
+    path: /ready
+    initialDelaySeconds: 3
+    periodSeconds: 5
+
+# --- Non-secret config -------------------------------------------------------
+
+# Rendered into a ConfigMap and loaded via envFrom. Anything truly secret goes
+# into `.secret.existingSecret` (next block) instead.
+config:
+  AGENT_ECHO_OPENROUTER_MODEL: "openrouter/auto"
+  AGENT_ECHO_LOG_LEVEL: "INFO"
+  AGENT_ECHO_SYSTEM_PROMPT: >-
+    You are a helpful AI customer-service agent. Be concise, warm, and accurate.
+
+# --- Secrets -----------------------------------------------------------------
+
+# Two modes, pick ONE:
+#  1) existingSecret: we don't create a Secret; we just reference one that
+#     already exists in the namespace. This is the production path (Sealed
+#     Secrets writes it, or External Secrets materializes it from Key Vault).
+#  2) createFromValues: we create a plain Secret from the values below.
+#     USE ONLY FOR LOCAL DEV. Never commit real keys to values.
+secret:
+  existingSecret: ""
+  createFromValues: false
+  values: {}
+
+# --- Volumes -----------------------------------------------------------------
+
+# readOnlyRootFilesystem=true forces us to mount a writable tmpfs somewhere the
+# app might want to scratch to (some Python libs write to /tmp).
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+
+# --- Scheduling hints --------------------------------------------------------
+
+# Empty by default; a tenant can pin to GPU nodes, spot nodes, etc. by
+# overriding these. Adding tenant-specific node pools is the path to "noisy
+# neighbor" mitigation beyond ResourceQuota.
+nodeSelector: {}
+tolerations: []
+affinity: {}

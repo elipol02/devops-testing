@@ -1,0 +1,28 @@
+{{/*
+=============================================================================
+ConfigMap: a kv store for NON-SECRET configuration.
+
+Why separate from the Deployment: lets us update config without rebuilding
+the image. Pods consume it via envFrom (see deployment.yaml).
+
+Why not just hardcode in the Deployment: ConfigMap is reusable, introspectable
+(`kubectl describe cm`), and safe to commit to Git.
+
+Gotcha: changing a ConfigMap does NOT restart pods automatically. We solve
+this with the checksum/config annotation in deployment.yaml that makes the
+pod spec change whenever this ConfigMap's content changes.
+=============================================================================
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agent-integration.fullname" . }}
+  labels:
+    {{- include "agent-integration.labels" . | nindent 4 }}
+data:
+  # Iterate over every k/v pair in values.config. Helm's `range` over a map
+  # yields key+value in alphabetical order, which is stable between runs
+  # (important so checksums don't flap).
+  {{- range $k, $v := .Values.config }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
