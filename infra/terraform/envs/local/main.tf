@@ -52,7 +52,7 @@ provider "kubectl" {
   cluster_ca_certificate = module.cluster.cluster_ca_certificate
   # load_config_file=false prevents alekc/kubectl from falling back to
   # ~/.kube/config if the inline config has issues. Safer in CI.
-  load_config_file       = false
+  load_config_file = false
 }
 
 # ---- 3. Platform bootstrap ----

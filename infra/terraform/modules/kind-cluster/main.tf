@@ -29,7 +29,7 @@ resource "kind_cluster" "this" {
   kubeconfig_path = pathexpand(var.kubeconfig_path)
 
   kind_config {
-    kind        = "Cluster"
+    kind = "Cluster"
     # kind's own config version - NOT a Kubernetes version. Kind docs pin
     # this to v1alpha4 at time of writing.
     api_version = "kind.x-k8s.io/v1alpha4"

@@ -87,7 +87,7 @@ resource "helm_release" "ingress_nginx" {
   # Pin chart versions so `terraform apply` is reproducible. Never use
   # "latest" in IaC: a new chart release could silently change defaults.
   version = "4.11.3"
-  timeout = 600  # seconds; 10 min covers image pulls on slow networks
+  timeout = 600 # seconds; 10 min covers image pulls on slow networks
 
   # `values` takes a list of YAML strings that Helm merges in order.
   # `yamlencode` converts an HCL map to YAML so we can keep the values
@@ -158,7 +158,7 @@ resource "helm_release" "kube_prometheus_stack" {
   repository = "https://prometheus-community.github.io/helm-charts"
   chart      = "kube-prometheus-stack"
   version    = "65.5.0"
-  timeout    = 900  # 15 min; this chart pulls a LOT of images
+  timeout    = 900 # 15 min; this chart pulls a LOT of images
 
   values = [yamlencode({
     # Stable object name prefix. Default includes the release name which is

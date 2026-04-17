@@ -51,7 +51,7 @@ resource "azurerm_log_analytics_workspace" "this" {
   name                = "${var.prefix}-logs"
   location            = azurerm_resource_group.this.location
   resource_group_name = azurerm_resource_group.this.name
-  sku                 = "PerGB2018"  # the standard pay-as-you-go SKU
+  sku                 = "PerGB2018" # the standard pay-as-you-go SKU
   retention_in_days   = 30
   tags                = var.tags
 }
@@ -79,11 +79,11 @@ resource "azurerm_container_registry" "this" {
   # "Standard" SKU: $5/mo, 100GB storage, good for dev/demo.
   # "Basic" is cheaper but lacks zone redundancy.
   # "Premium" adds geo-replication, private endpoints, signing.
-  sku                 = "Standard"
+  sku = "Standard"
   # admin_enabled=false forces AAD-based auth (no shared passwords).
   # Admin creds are a classic "oops committed to Git" foot-gun.
-  admin_enabled       = false
-  tags                = var.tags
+  admin_enabled = false
+  tags          = var.tags
 }
 
 # -----------------------------------------------------------------------------
@@ -100,11 +100,11 @@ resource "azurerm_kubernetes_cluster" "this" {
   resource_group_name = azurerm_resource_group.this.name
   # dns_prefix feeds into the API server's public FQDN:
   #   <prefix>-<hash>.hcp.<region>.azmk8s.io
-  dns_prefix          = "${var.prefix}-aks"
-  kubernetes_version  = var.kubernetes_version
+  dns_prefix         = "${var.prefix}-aks"
+  kubernetes_version = var.kubernetes_version
   # Free tier = no SLA on the API server. For prod use "Standard" for the
   # 99.95% SLA + higher etcd limits. Costs ~$75/mo per cluster.
-  sku_tier            = "Free"
+  sku_tier = "Free"
 
   # --- OIDC + Workload Identity ---
   # oidc_issuer_enabled publishes a JWT issuer URL from the cluster; AAD
@@ -123,7 +123,7 @@ resource "azurerm_kubernetes_cluster" "this" {
   role_based_access_control_enabled = true
 
   default_node_pool {
-    name       = "system"  # hosts system pods (CoreDNS, kube-proxy, etc.)
+    name       = "system" # hosts system pods (CoreDNS, kube-proxy, etc.)
     node_count = var.node_count
     vm_size    = var.node_vm_size
     # 64 GB per node is comfortable for container images. 30 GB default
