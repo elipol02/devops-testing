@@ -168,7 +168,7 @@ jobs:
       # stricter teams add MEDIUM. `ignore-unfixed: true` skips CVEs with no
       # patch available (can't action them anyway).
       - name: trivy scan (fail on HIGH,CRITICAL)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: local/${{ inputs.service_name }}:scan
           format: table
