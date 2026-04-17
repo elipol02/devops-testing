@@ -170,7 +170,7 @@ def new_tenant(
     ingress_domain: Annotated[str, typer.Option(help="Wildcard ingress domain.")] = "local.test",
     repo_url: Annotated[
         str, typer.Option("--repo-url", help="GitOps repo URL.")
-    ] = "https://github.com/YOUR-USER/devops-platform.git",
+    ] = "https://github.com/elipol02/devops-testing.git",
     revision: Annotated[str, typer.Option(help="Git revision for Argo CD to track.")] = "main",
     env_prefix: Annotated[
         str,

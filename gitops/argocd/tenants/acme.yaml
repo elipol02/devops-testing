@@ -44,7 +44,7 @@ spec:
     # IMPORTANT: point this at YOUR fork. The root app-of-apps also clones
     # this repo, but each Application can point at a DIFFERENT repo/ref if
     # needed (useful for per-tenant isolation in a real platform).
-    repoURL: https://github.com/YOUR-USER/devops-platform.git
+    repoURL: https://github.com/elipol02/devops-testing.git
     targetRevision: main
     # path within the repo. We reference the CHART DIRECTORY, not a
     # pre-rendered manifest - Argo CD invokes helm template at sync time.

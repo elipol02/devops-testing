@@ -114,13 +114,13 @@ resource "helm_release" "ingress_nginx" {
       ] : []
       # Bind 80/443 on the host, so kind's extra_port_mappings in the
       # cluster config forward curl localhost:80 into ingress-nginx.
-      hostPort = var.ingress_service_type == "NodePort" ? {
-        enabled = true
+      hostPort = {
+        enabled = var.ingress_service_type == "NodePort"
         ports = {
           http  = 80
           https = 443
         }
-      } : { enabled = false }
+      }
       extraArgs = {
         # Enables SNI-based TLS pass-through (rarely needed but cheap to enable).
         "enable-ssl-passthrough" = ""
@@ -134,6 +134,10 @@ resource "helm_release" "ingress_nginx" {
       }
     }
   })]
+
+  # ingress-nginx ships its own ServiceMonitor; the CRD for that type is
+  # installed by kube-prometheus-stack, so that chart must run first.
+  depends_on = [helm_release.kube_prometheus_stack]
 }
 
 # -----------------------------------------------------------------------------
@@ -195,10 +199,6 @@ resource "helm_release" "kube_prometheus_stack" {
 
     alertmanager = { enabled = true }
   })]
-
-  # Ingress controller must exist before Grafana's Ingress is created, or
-  # the IngressClass won't resolve and the admission webhook can reject it.
-  depends_on = [helm_release.ingress_nginx]
 }
 
 # -----------------------------------------------------------------------------

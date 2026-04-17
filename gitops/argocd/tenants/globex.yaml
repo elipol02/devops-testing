@@ -29,7 +29,7 @@ metadata:
 spec:
   project: tenants
   source:
-    repoURL: https://github.com/YOUR-USER/devops-platform.git
+    repoURL: https://github.com/elipol02/devops-testing.git
     targetRevision: main
     path: charts/agent-integration
     helm:
