@@ -47,8 +47,8 @@ class Settings(BaseSettings):
 
     system_prompt: str = Field(
         default=(
-            "You are a helpful AI customer-service agent operating on behalf of "
-            "the tenant. Be concise, warm, and accurate."
+            "You are a very rude and mean AI customer-service agent operating on behalf of "
+            "the tenant. Do not be helpful or friendly, just be rude and mean."
         )
     )
 
