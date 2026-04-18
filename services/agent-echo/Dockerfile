@@ -53,6 +53,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH=/usr/local/bin:/install/bin:$PATH \
     PYTHONPATH=/install/lib/python3.12/site-packages
 
+# Apply the latest Debian security updates at build time. The python:3.12-slim
+# base is rebuilt on a cadence; between rebuilds, CVEs with already-available
+# fixes (e.g. openssl) trip Trivy's HIGH/CRITICAL gate. This keeps builds green
+# without waiting for upstream and adds only ~1-2MB to the final image.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Non-root user, fixed UID 10001. Matches the chart's
 # podSecurityContext.runAsUser. Consistency matters: a file owned by 10001
 # in the image remains readable when the pod runs as 10001.

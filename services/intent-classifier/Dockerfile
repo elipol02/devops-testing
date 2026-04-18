@@ -29,6 +29,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH=/usr/local/bin:/install/bin:$PATH \
     PYTHONPATH=/install/lib/python3.12/site-packages
 
+# Apply the latest Debian security updates at build time so CVEs with
+# already-available fixes don't trip Trivy's HIGH/CRITICAL gate.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --no-create-home --shell /sbin/nologin app
 
