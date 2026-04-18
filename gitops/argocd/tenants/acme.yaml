@@ -39,7 +39,6 @@ spec:
   # gitops/argocd/projects/tenants.yaml that constrains WHERE tenant apps
   # can deploy (namespace glob "tenant-*").
   project: tenants
-
   source:
     # IMPORTANT: point this at YOUR fork. The root app-of-apps also clones
     # this repo, but each Application can point at a DIFFERENT repo/ref if
@@ -62,8 +61,8 @@ spec:
         tenant: acme
         environment: dev
         image:
-          repository: ghcr.io/YOUR-USER/agent-echo
-          tag: "0.1.0"
+          repository: ghcr.io/elipol02/agent-echo
+          tag: "main-924aa518572c"
         replicaCount: 2
         ingress:
           enabled: true
@@ -79,13 +78,11 @@ spec:
           AGENT_ECHO_LOG_LEVEL: "INFO"
           AGENT_ECHO_SYSTEM_PROMPT: >-
             You are an AI agent for Acme Corp. Keep answers short and specific.
-
   destination:
     server: https://kubernetes.default.svc
     # Namespace matches the AppProject glob "tenant-*". CreateNamespace=true
     # in syncOptions below lets Argo create it automatically.
     namespace: tenant-acme
-
   syncPolicy:
     # automated.* turns this into "pull-based continuous deployment":
     #   prune:    remove resources that were deleted from Git
