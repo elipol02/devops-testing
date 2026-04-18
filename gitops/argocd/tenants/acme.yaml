@@ -62,7 +62,7 @@ spec:
         environment: dev
         image:
           repository: ghcr.io/elipol02/agent-echo
-          tag: "main-924aa518572c"
+          tag: "main-d26243cad32c"
         replicaCount: 2
         ingress:
           enabled: true
