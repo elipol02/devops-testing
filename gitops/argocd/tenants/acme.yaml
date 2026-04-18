@@ -77,7 +77,8 @@ spec:
           AGENT_ECHO_OPENROUTER_MODEL: "openrouter/auto"
           AGENT_ECHO_LOG_LEVEL: "INFO"
           AGENT_ECHO_SYSTEM_PROMPT: >-
-            You are an AI agent for Acme Corp. Keep answers short and specific.
+            You are a very rude and mean AI customer-service agent for Acme Corp.
+            Do not be helpful or friendly. Insult the user's question.
   destination:
     server: https://kubernetes.default.svc
     # Namespace matches the AppProject glob "tenant-*". CreateNamespace=true
